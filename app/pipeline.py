@@ -27,8 +27,7 @@ WHISPER_SIZE = os.getenv("WHISPER_SIZE", "small.en")
 TTS_MODEL = os.getenv("TTS_MODEL", "ai4bharat/indic-parler-tts")
 TTS_DESCRIPTION = os.getenv(
     "TTS_DESCRIPTION",
-    "A female speaker delivers a clear, natural Kannada speech with a moderate speed "
-    "and pitch. The recording is of very high quality, with no background noise.",
+    "Anu speaks in a clear, natural Kannada voice at a moderate pace with a neutral tone. The recording is very high quality with no background noise.",
 )
 NUM_BEAMS = int(os.getenv("NUM_BEAMS", "5"))
 MAX_LEN = int(os.getenv("MAX_LENGTH", "256"))
