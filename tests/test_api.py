@@ -121,3 +121,11 @@ def test_metrics():
         c.post("/translate", json={"text": "x"}, headers=AUTH)
         m = c.get("/metrics").text
         assert "api_requests_total" in m and "stage_latency_seconds" in m
+
+
+def test_browser_ui_served():
+    with TestClient(app) as c:
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+        assert "getUserMedia" in r.text and 'fetch("speak"' in r.text
