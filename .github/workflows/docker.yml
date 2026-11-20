@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
-      - run: pytest -q tests   # runs with MOCK_MODEL=1, no GPU needed
+      - run: python -m pytest -q tests   # runs with MOCK_MODEL=1, no GPU needed
 
   publish:
     needs: test
