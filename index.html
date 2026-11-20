@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dharwad Kannada Voice Translator</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a64; --line: #e3e1d9;
+    --accent: #b4441f; --accent-ink: #ffffff; --ok: #2f7a4a; --err: #a3271c; --chip: #efede6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161614; --card: #1f1f1c; --ink: #ecebe6; --muted: #9b9a93; --line: #34332e;
+            --accent: #e0703f; --accent-ink: #161614; --chip: #2a2a26; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Kannada", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }
+  input, textarea { width: 100%; font: inherit; color: var(--ink); background: var(--bg);
+                    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  textarea { resize: vertical; min-height: 64px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; border: 0; border-radius: 999px; padding: 10px 18px; cursor: pointer;
+           background: var(--chip); color: var(--ink); }
+  button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #mic { width: 112px; height: 112px; border-radius: 50%; font-size: 2.4rem; display: grid; place-items: center;
+         background: var(--accent); color: var(--accent-ink); }
+  #mic.rec { animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(224,112,63,.55)} 70%{box-shadow:0 0 0 18px rgba(224,112,63,0)} 100%{box-shadow:0 0 0 0 rgba(224,112,63,0)} }
+  .status { color: var(--muted); font-size: .95rem; }
+  .status.err { color: var(--err); }
+  .status.ok { color: var(--ok); }
+  .out dt { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 12px; }
+  .out dd { margin: 2px 0 0; font-size: 1.15rem; }
+  .out dd.dwd { font-size: 1.35rem; font-weight: 600; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 14px; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 3px 10px; font-size: .8rem; color: var(--muted);
+          font-variant-numeric: tabular-nums; }
+  audio { width: 100%; margin-top: 14px; }
+  .hidden { display: none; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .tabs button.active { background: var(--ink); color: var(--bg); }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 24px; }
+  code { background: var(--chip); padding: 1px 6px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>English → Dharwad Kannada</h1>
+  <p class="sub">Speak English, hear it in Dharwad Kannada. Whisper → IndicTrans2 → fine-tuned dialect model → Indic Parler-TTS, all on one GPU.</p>
+
+  <div class="card">
+    <label for="key">API key</label>
+    <div class="row">
+      <input id="key" type="password" placeholder="Paste your API key (without 'Bearer')" autocomplete="off" style="flex:1">
+      <span id="health" class="status">Checking server…</span>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button id="tab-voice" class="active">🎤 Voice</button>
+    <button id="tab-text">⌨️ Text</button>
+  </div>
+
+  <div id="panel-voice" class="card">
+    <div class="row" style="gap:20px">
+      <button id="mic" title="Click to start / stop recording">🎤</button>
+      <div style="flex:1">
+        <div id="vstatus" class="status">Click the mic, speak an English sentence, click again to stop.</div>
+        <div class="row" style="margin-top:10px">
+          <label style="margin:0;display:flex;gap:6px;align-items:center;color:var(--ink)">
+            <input id="speakTts" type="checkbox" checked style="width:auto"> Speak the answer
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="panel-text" class="card hidden">
+    <label for="enText">English sentence</label>
+    <textarea id="enText" placeholder="Why are you so late today?"></textarea>
+    <div class="row" style="margin-top:12px">
+      <button id="translateBtn" class="primary">Translate</button>
+      <span id="tstatus" class="status"></span>
+    </div>
+  </div>
+
+  <div id="result" class="card hidden">
+    <dl class="out" style="margin:0">
+      <dt>English</dt><dd id="rEn"></dd>
+      <dt>Kannada (standard)</dt><dd id="rKn"></dd>
+      <dt>Dharwad Kannada</dt><dd id="rDwd" class="dwd"></dd>
+    </dl>
+    <div class="row" style="margin-top:12px">
+      <button id="speakBtn">🔊 Speak Dharwad</button>
+    </div>
+    <audio id="player" controls class="hidden"></audio>
+    <div id="chips" class="chips"></div>
+  </div>
+
+  <footer>Audio is processed in memory on the server and not stored. API docs: <a href="docs">/docs</a> · status: <a href="health">/health</a></footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {  // browser storage can be unavailable; never let that break the page
+  get(k) { try { return sessionStorage.getItem(k) || ""; } catch { return ""; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch {} },
+};
+$("key").value = store.get("dharwad_key");
+$("key").addEventListener("input", () => store.set("dharwad_key", $("key").value.trim()));
+const authHeaders = () => { const k = $("key").value.trim(); return k ? { Authorization: "Bearer " + k } : {}; };
+
+function setStatus(el, text, kind = "") { el.textContent = text; el.className = "status " + kind; }
+
+async function errorText(resp) {
+  try { const j = await resp.json(); return `${resp.status}: ${typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)}`; }
+  catch { return `${resp.status}: ${resp.statusText}`; }
+}
+
+// ---- server health ----
+async function checkHealth() {
+  try {
+    const h = await (await fetch("health")).json();
+    if (h.status === "ok") setStatus($("health"), "● Server ready", "ok");
+    else { setStatus($("health"), `Models ${h.status}…`, h.status === "error" ? "err" : ""); setTimeout(checkHealth, 5000); }
+  } catch { setStatus($("health"), "Server unreachable", "err"); setTimeout(checkHealth, 5000); }
+}
+checkHealth();
+
+// ---- tabs ----
+function showTab(which) {
+  $("tab-voice").classList.toggle("active", which === "voice");
+  $("tab-text").classList.toggle("active", which === "text");
+  $("panel-voice").classList.toggle("hidden", which !== "voice");
+  $("panel-text").classList.toggle("hidden", which !== "text");
+}
+$("tab-voice").onclick = () => showTab("voice");
+$("tab-text").onclick = () => showTab("text");
+
+// ---- result rendering ----
+function showResult(r) {
+  $("result").classList.remove("hidden");
+  $("rEn").textContent = r.english; $("rKn").textContent = r.kannada; $("rDwd").textContent = r.dharwad;
+  const names = { asr: "Whisper", en_kn: "EN→KN", dialect: "Dharwad", tts: "TTS" };
+  $("chips").innerHTML = "";
+  for (const [k, v] of Object.entries(r.timings_ms || {})) {
+    const c = document.createElement("span"); c.className = "chip"; c.textContent = `${names[k] || k} ${Math.round(v)} ms`;
+    $("chips").appendChild(c);
+  }
+  const t = document.createElement("span"); t.className = "chip"; t.textContent = `total ${Math.round(r.latency_ms)} ms`;
+  $("chips").appendChild(t);
+}
+function playWav(url) {
+  $("player").src = url; $("player").classList.remove("hidden");
+  $("player").play().catch(() => {});  // autoplay may be blocked; controls stay visible
+}
+
+// ---- voice: record with the browser mic, send to /speak ----
+let recorder = null, chunks = [], stream = null;
+function pickMime() {
+  const opts = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  return opts.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || "";
+}
+$("mic").onclick = async () => {
+  if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus($("vstatus"), "This browser can't record audio here (needs HTTPS and a modern browser).", "err"); return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    setStatus($("vstatus"), "Microphone permission denied. Allow mic access for this site and try again.", "err"); return;
+  }
+  const mime = pickMime();
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  chunks = [];
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = sendRecording;
+  recorder.start();
+  $("mic").classList.add("rec"); $("mic").textContent = "■";
+  setStatus($("vstatus"), "Recording… click to stop.");
+};
+
+async function sendRecording() {
+  stream.getTracks().forEach((t) => t.stop());
+  $("mic").classList.remove("rec"); $("mic").textContent = "🎤"; $("mic").disabled = true;
+  const type = recorder.mimeType || "audio/webm";
+  const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+  const blob = new Blob(chunks, { type });
+  if (blob.size < 2000) { setStatus($("vstatus"), "That was too short, try again.", "err"); $("mic").disabled = false; return; }
+
+  setStatus($("vstatus"), "Translating on the GPU…");
+  const fd = new FormData();
+  fd.append("audio", blob, "speech." + ext);
+  fd.append("tts", $("speakTts").checked ? "true" : "false");
+  try {
+    const resp = await fetch("speak", { method: "POST", headers: authHeaders(), body: fd });
+    if (!resp.ok) { setStatus($("vstatus"), "Error " + await errorText(resp), "err"); return; }
+    const r = await resp.json();
+    showResult(r);
+    setStatus($("vstatus"), "Done. Click the mic for the next sentence.", "ok");
+    if (r.audio_wav_base64) playWav("data:audio/wav;base64," + r.audio_wav_base64);
+  } catch (e) {
+    setStatus($("vstatus"), "Network error: " + e.message, "err");
+  } finally { $("mic").disabled = false; }
+}
+
+// ---- text: /translate/en ----
+$("translateBtn").onclick = async () => {
+  const text = $("enText").value.trim();
+  if (!text) return;
+  $("translateBtn").disabled = true; setStatus($("tstatus"), "Translating…");
+  try {
+    const resp = await fetch("translate/en", {
+      method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ text }),
+    });
+    if (!resp.ok) { setStatus($("tstatus"), "Error " + await errorText(resp), "err"); return; }
+    showResult(await resp.json()); setStatus($("tstatus"), "");
+  } catch (e) { setStatus($("tstatus"), "Network error: " + e.message, "err"); }
+  finally { $("translateBtn").disabled = false; }
+};
+
+// ---- speak the current Dharwad text: /tts ----
+$("speakBtn").onclick = async () => {
+  const text = $("rDwd").textContent.trim();
+  if (!text) return;
+  $("speakBtn").disabled = true; $("speakBtn").textContent = "🔊 Generating…";
+  try {
+    const resp = await fetch("tts", {
+      method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ text }),
+    });
+    if (!resp.ok) { alertLike(await errorText(resp)); return; }
+    playWav(URL.createObjectURL(await resp.blob()));
+  } finally { $("speakBtn").disabled = false; $("speakBtn").textContent = "🔊 Speak Dharwad"; }
+};
+function alertLike(msg) {
+  const c = document.createElement("span"); c.className = "chip"; c.style.color = "var(--err)"; c.textContent = "TTS error " + msg;
+  $("chips").appendChild(c);
+}
+</script>
+</body>
+</html>
