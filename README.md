@@ -72,7 +72,8 @@ python client/voice_client.py
 - **GPU precision:** IndicTrans2 in fp16, Parler-TTS in bf16 (fp16 on GPUs without bf16), Whisper fp16 via CTranslate2. CPU fallback: fp32, TTS int8-quantized, Whisper int8.
 - **Per-stage timings** in every response, the logs and `/metrics` → shows exactly which model is the bottleneck.
 - **Privacy:** logs contain request id, sizes and latencies — **never the text or audio**. Audio is processed in memory and not stored.
-- **Input limits:** 10 MB / 60 s audio, 1000 chars per text, 16 texts per batch.
+- **Paragraphs are processed sentence by sentence.** The translation models were trained on single sentences (≤128 tokens), so text is split at `. ! ?` (and line breaks; overlong sentences at commas), all sentences are translated in one batched GPU pass, and TTS speaks each sentence and joins them with short pauses.
+- **Input limits:** 10 MB / 60 s audio, 3000 chars per text, 16 texts per batch, max 15 sentences for speech in one request (TTS takes ~4 s per sentence and the RunPod proxy cuts off at ~100 s).
 - **Secrets only via env vars** (`HF_TOKEN`, `API_KEY`).
 - **`MOCK_MODEL=1`** replaces every model with a fake, so the test suite and CI run without a GPU.
 - **`ENABLE_VOICE=0`** serves only the Dharwad model (text-only, ~3 GB VRAM).
@@ -89,6 +90,9 @@ python client/voice_client.py
 | `TTS_DESCRIPTION` | no | clear female voice | Parler-TTS voice description; see the model card for named Kannada speakers. |
 | `MODEL_ID`, `MODEL_REVISION` | no | my model, `main` | Pin a commit hash in production (the model uses `trust_remote_code`). |
 | `NUM_BEAMS` | no | `5` | Lower = faster translation. |
+| `IT2_BATCH` | no | `8` | Sentences per GPU batch for translation. |
+| `MAX_TTS_SENTENCES` | no | `15` | Longer texts get `413` from `/tts` and `/speak` (use `tts=false`). |
+| `TTS_PAUSE_SECONDS` | no | `0.3` | Silence between spoken sentences. |
 | `PORT` | no | `8000` | |
 
 ## GPU sizing

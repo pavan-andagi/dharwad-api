@@ -129,3 +129,36 @@ def test_browser_ui_served():
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
         assert "getUserMedia" in r.text and 'fetch("speak"' in r.text
+
+
+def test_split_sentences():
+    from app.pipeline import split_sentences
+    assert split_sentences("Hi there. How are you? Fine!") == ["Hi there.", "How are you?", "Fine!"]
+    assert split_sentences("ನಾನು ಬಂದೆ. ನೀನು ಎಲ್ಲಿ?") == ["ನಾನು ಬಂದೆ.", "ನೀನು ಎಲ್ಲಿ?"]
+    assert split_sentences("line one\n\nline two") == ["line one", "line two"]
+    assert split_sentences("one sentence") == ["one sentence"]
+    long = ", ".join(["word " * 10] * 10)          # ~500 chars, no full stop
+    parts = split_sentences(long)
+    assert len(parts) > 1 and all(len(p) <= 301 for p in parts)
+    assert "".join(parts).replace(" ", "") == long.replace(" ", "")
+
+
+def test_paragraph_translated_sentence_by_sentence():
+    with TestClient(app) as c:
+        wait_ready(c)
+        para = "I went to the market. It was crowded. I bought mangoes."
+        b = c.post("/translate/en", json={"text": para}, headers=AUTH).json()
+        assert b["sentences"] == 3
+        assert b["dharwad"] == ("[dharwad] [kn] I went to the market. [dharwad] [kn] It was crowded. "
+                                "[dharwad] [kn] I bought mangoes.")
+        r = c.post("/translate", json={"texts": ["ಒಂದು. ಎರಡು.", "ಮೂರು"]}, headers=AUTH).json()
+        assert r["translations"] == ["[dharwad] ಒಂದು. [dharwad] ಎರಡು.", "[dharwad] ಮೂರು"]
+        assert r["sentences"] == 3
+
+
+def test_too_long_for_tts():
+    with TestClient(app) as c:
+        wait_ready(c)
+        text = " ".join(f"Sentence {i}." for i in range(20))
+        assert c.post("/tts", json={"text": text}, headers=AUTH).status_code == 413
+        assert c.post("/translate/en", json={"text": text}, headers=AUTH).status_code == 200

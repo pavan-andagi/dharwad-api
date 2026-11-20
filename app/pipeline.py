@@ -33,6 +33,37 @@ TTS_DESCRIPTION = os.getenv(
 NUM_BEAMS = int(os.getenv("NUM_BEAMS", "5"))
 MAX_LEN = int(os.getenv("MAX_LENGTH", "256"))
 ASR_SAMPLE_RATE = 16_000
+IT2_BATCH = int(os.getenv("IT2_BATCH", "8"))          # sentences per GPU batch
+TTS_PAUSE_SECONDS = float(os.getenv("TTS_PAUSE_SECONDS", "0.3"))
+MAX_SENTENCE_CHARS = 300
+
+
+def split_sentences(text: str) -> list[str]:
+    """
+    Split a paragraph into sentences for English and Kannada.
+    The models were trained on single sentences (max 128 tokens), so long input is
+    translated and spoken sentence by sentence instead of in one go.
+    """
+    import re
+    parts = []
+    for line in re.split(r"\n+", text):
+        parts += re.split(r"(?<=[.!?\u0964])\s+", line.strip())   # . ! ? and the danda
+    out = []
+    for p in (x.strip() for x in parts):
+        if not p:
+            continue
+        # very long sentence without full stops: break at commas / semicolons
+        while len(p) > MAX_SENTENCE_CHARS:
+            cut = max(p.rfind(c, 0, MAX_SENTENCE_CHARS) for c in ",;:")
+            if cut <= 0:
+                cut = p.rfind(" ", 0, MAX_SENTENCE_CHARS)
+            if cut <= 0:
+                cut = MAX_SENTENCE_CHARS
+            out.append(p[:cut + 1].strip())
+            p = p[cut + 1:].strip()
+        if p:
+            out.append(p)
+    return out
 
 
 def wav_bytes(samples, sample_rate: int) -> bytes:
@@ -178,6 +209,12 @@ class IndicTrans2(Stage):
     def _run(self, texts: list[str]) -> list[str]:
         if MOCK:
             return [f"{self._mock_prefix}{t}" for t in texts]
+        out = []
+        for i in range(0, len(texts), IT2_BATCH):  # bounded batches keep GPU memory predictable
+            out += self._translate_batch(texts[i:i + IT2_BATCH])
+        return out
+
+    def _translate_batch(self, texts: list[str]) -> list[str]:
         with self._torch.inference_mode():
             batch = self.ip.preprocess_batch(texts, src_lang=self.src_lang, tgt_lang=self.tgt_lang)
             self.tok.src_lang = self.src_lang
@@ -222,17 +259,23 @@ class TTS(Stage):
         self.sample_rate = 16_000
 
     def _run(self, text: str, description: str = TTS_DESCRIPTION) -> bytes:
+        """Speak sentence by sentence (Parler-TTS is trained on short utterances), then join."""
+        sentences = split_sentences(text) or [text]
         if MOCK:
-            return _silence_wav(0.5, self.sample_rate)
+            return _silence_wav(0.5 * len(sentences), self.sample_rate)
+        import numpy as np
+        pause = np.zeros(int(TTS_PAUSE_SECONDS * self.sample_rate), dtype=np.float32)
+        pieces = []
         with self._torch.inference_mode():
             d = self.desc_tok(description, return_tensors="pt").to(self.device)
-            p = self.prompt_tok(text, return_tensors="pt").to(self.device)
-            audio = self.model.generate(
-                input_ids=d.input_ids, attention_mask=d.attention_mask,
-                prompt_input_ids=p.input_ids, prompt_attention_mask=p.attention_mask,
-            )
-        samples = audio.to(self._torch.float32).cpu().numpy().squeeze()
-        return wav_bytes(samples, self.sample_rate)
+            for sentence in sentences:
+                p = self.prompt_tok(sentence, return_tensors="pt").to(self.device)
+                audio = self.model.generate(
+                    input_ids=d.input_ids, attention_mask=d.attention_mask,
+                    prompt_input_ids=p.input_ids, prompt_attention_mask=p.attention_mask,
+                )
+                pieces += [audio.to(self._torch.float32).cpu().numpy().squeeze(), pause]
+        return wav_bytes(np.concatenate(pieces[:-1]), self.sample_rate)
 
 
 def build_stages(enable_voice: bool) -> dict:

@@ -39,14 +39,15 @@ from fastapi.responses import HTMLResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field, model_validator
 
-from app.pipeline import MOCK, build_stages
+from app.pipeline import MOCK, build_stages, split_sentences
 
 # --------------------------------------------------------------------------- #
 # Config (environment variables only - nothing secret in code)
 # --------------------------------------------------------------------------- #
 API_KEY = os.getenv("API_KEY")  # if set, clients must send "Authorization: Bearer <API_KEY>"
 ENABLE_VOICE = os.getenv("ENABLE_VOICE", "1") == "1"  # 0 = text-only (Dharwad model only)
-MAX_CHARS = int(os.getenv("MAX_CHARS", "1000"))
+MAX_CHARS = int(os.getenv("MAX_CHARS", "3000"))  # paragraphs are split into sentences
+MAX_TTS_SENTENCES = int(os.getenv("MAX_TTS_SENTENCES", "15"))  # ~4 s each; RunPod proxy cuts off at ~100 s
 MAX_BATCH = int(os.getenv("MAX_BATCH", "16"))
 MAX_AUDIO_MB = float(os.getenv("MAX_AUDIO_MB", "10"))
 MAX_AUDIO_SECONDS = float(os.getenv("MAX_AUDIO_SECONDS", "60"))
@@ -132,6 +133,26 @@ def timed(name: str, timings: dict, *args):
     return out
 
 
+def translate_paragraphs(stage: str, timings: dict, texts: list[str]) -> tuple[list[str], int]:
+    """Split every text into sentences, translate all sentences in one GPU pass, re-join per text."""
+    split = [split_sentences(t) or [t] for t in texts]
+    flat = [s for sents in split for s in sents]
+    out_flat = timed(stage, timings, flat)
+    out, i = [], 0
+    for sents in split:
+        out.append(" ".join(out_flat[i:i + len(sents)]))
+        i += len(sents)
+    return out, len(flat)
+
+
+def check_tts_length(text: str):
+    n = len(split_sentences(text))
+    if n > MAX_TTS_SENTENCES:
+        raise HTTPException(status_code=413, detail=(
+            f"{n} sentences is too long to speak in one request (max {MAX_TTS_SENTENCES}); "
+            "send tts=false for the text, or split the paragraph"))
+
+
 def request_id(request: Request) -> str:
     return request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
 
@@ -169,6 +190,7 @@ class TranslateRequest(BaseModel):
 
 class TranslateResponse(BaseModel):
     translations: list[str]
+    sentences: int
     latency_ms: float
     request_id: str
 
@@ -181,6 +203,7 @@ class EnglishResponse(BaseModel):
     english: str
     kannada: str
     dharwad: str
+    sentences: int
     timings_ms: dict
     latency_ms: float
     request_id: str
@@ -194,6 +217,7 @@ class SpeakResponse(BaseModel):
     english: str
     kannada: str
     dharwad: str
+    sentences: int
     audio_wav_base64: Optional[str] = None
     timings_ms: dict
     latency_ms: float
@@ -212,11 +236,12 @@ def translate(req: TranslateRequest, request: Request):
     require("translate", "dialect")
     texts = req.texts or [req.text]
     try:
-        out = timed("dialect", timings, texts)
+        out, n_sent = translate_paragraphs("dialect", timings, texts)
     except Exception as e:
         fail("translate", rid, e)
-    total = finish("translate", rid, t0, timings, n=len(texts), input_chars=sum(map(len, texts)))
-    return TranslateResponse(translations=out, latency_ms=total, request_id=rid)
+    total = finish("translate", rid, t0, timings, n=len(texts), sentences=n_sent,
+                   input_chars=sum(map(len, texts)))
+    return TranslateResponse(translations=out, sentences=n_sent, latency_ms=total, request_id=rid)
 
 
 @app.post("/translate/en", response_model=EnglishResponse, dependencies=[Depends(check_api_key)])
@@ -225,12 +250,14 @@ def translate_english(req: EnglishRequest, request: Request):
     rid, t0, timings = request_id(request), time.perf_counter(), {}
     require("translate_en", "en_kn", "dialect")
     try:
-        kannada = timed("en_kn", timings, [req.text])[0]
-        dharwad = timed("dialect", timings, [kannada])[0]
+        en_sents = split_sentences(req.text) or [req.text]
+        kn_sents = timed("en_kn", timings, en_sents)
+        dw_sents = timed("dialect", timings, kn_sents)
+        kannada, dharwad = " ".join(kn_sents), " ".join(dw_sents)
     except Exception as e:
         fail("translate_en", rid, e)
-    total = finish("translate_en", rid, t0, timings, input_chars=len(req.text))
-    return EnglishResponse(english=req.text, kannada=kannada, dharwad=dharwad,
+    total = finish("translate_en", rid, t0, timings, input_chars=len(req.text), sentences=len(en_sents))
+    return EnglishResponse(english=req.text, kannada=kannada, dharwad=dharwad, sentences=len(en_sents),
                            timings_ms=timings, latency_ms=total, request_id=rid)
 
 
@@ -240,6 +267,7 @@ def tts(req: TTSRequest, request: Request):
     """Kannada / Dharwad text -> speech (WAV)."""
     rid, t0, timings = request_id(request), time.perf_counter(), {}
     require("tts", "tts")
+    check_tts_length(req.text)
     try:
         audio = timed("tts", timings, req.text)
     except Exception as e:
@@ -286,16 +314,23 @@ def speak(
         raise HTTPException(status_code=422, detail="no speech recognised")
 
     try:
-        kannada = timed("en_kn", timings, [english])[0]
-        dharwad = timed("dialect", timings, [kannada])[0]
+        en_sents = split_sentences(english) or [english]
+        kn_sents = timed("en_kn", timings, en_sents)
+        dw_sents = timed("dialect", timings, kn_sents)
+        kannada, dharwad = " ".join(kn_sents), " ".join(dw_sents)
+    except Exception as e:
+        fail("speak", rid, e)
+    if tts:
+        check_tts_length(dharwad)
+    try:
         wav = timed("tts", timings, dharwad) if tts else None
     except Exception as e:
         fail("speak", rid, e)
 
-    total = finish("speak", rid, t0, timings, audio_in_bytes=len(data),
+    total = finish("speak", rid, t0, timings, audio_in_bytes=len(data), sentences=len(en_sents),
                    audio_out_bytes=len(wav) if wav else 0)
     return SpeakResponse(
-        english=english, kannada=kannada, dharwad=dharwad,
+        english=english, kannada=kannada, dharwad=dharwad, sentences=len(en_sents),
         audio_wav_base64=base64.b64encode(wav).decode() if wav else None,
         timings_ms=timings, latency_ms=total, request_id=rid,
     )
